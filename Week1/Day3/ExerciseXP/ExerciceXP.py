@@ -96,7 +96,6 @@ class Zoo:
         self.name = zoo_name
 
     def add_animal(self, new_animal):
-        
         if new_animal not in self.animals:
             self.animals.append(new_animal)
         else:
