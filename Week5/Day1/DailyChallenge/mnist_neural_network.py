@@ -18,9 +18,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import seaborn as sns
-from sklearn.neural_network import MLPClassifier
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
 from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
-from sklearn.preprocessing import OneHotEncoder
 from matplotlib.patches import Patch
 import warnings
 warnings.filterwarnings("ignore")
@@ -36,69 +37,47 @@ np.random.seed(42)
 
 def load_and_preprocess():
     """
-    Génère un dataset MNIST réaliste (28×28 = 784 pixels).
-    Chiffres 1/7, 3/8, 4/9 sont volontairement similaires → erreurs réalistes.
+    Charge le vrai dataset MNIST via tf.keras.datasets.
+    70 000 images réelles de chiffres manuscrits (28×28 pixels, niveaux de gris).
 
     Traitement appliqué :
-      - Normalisation des pixels dans [0, 1]
+      - Normalisation des pixels dans [0, 1]  (division par 255)
+      - Aplatissement 28×28 → vecteur de 784 pixels
       - One-hot encoding des labels  (ex: 3 → [0,0,0,1,0,0,0,0,0,0])
-      - Séparation train (6 000) / test (1 000)
+      - Split officiel MNIST : 60 000 train / 10 000 test
     """
     print("═" * 65)
     print("  ÉTAPE 1 — Chargement et prétraitement du dataset MNIST")
     print("═" * 65)
 
-    N_CLASSES = 10
-    N_TOTAL   = 7000   # 6 000 train + 1 000 test
-
-    print(f"\n  Génération du dataset : {N_TOTAL} images 28×28...")
-
-    # Template par classe (centre du cluster dans l'espace des pixels)
-    centers = np.random.rand(N_CLASSES, 784)
-
-    # Rendre certaines paires similaires → confusion réaliste (comme MNIST réel)
-    # 1 ↔ 7 : formes proches (barre verticale vs diagonale)
-    centers[7] = centers[1] * 0.85 + centers[7] * 0.15
-    # 3 ↔ 8 : confusion fréquente sur MNIST
-    centers[8] = centers[3] * 0.80 + centers[8] * 0.20
-    # 4 ↔ 9 : confusion fréquente sur MNIST
-    centers[9] = centers[4] * 0.82 + centers[9] * 0.18
-
-    X_list, y_list = [], []
-    for digit in range(N_CLASSES):
-        for _ in range(N_TOTAL // N_CLASSES):
-            # Pixel = template + bruit gaussien fort → imite l'écriture imparfaite
-            noise = np.random.normal(0, 0.45, 784)
-            img   = np.clip(centers[digit] + noise, 0, 1)
-            X_list.append(img)
-            y_list.append(digit)
-
-    X = np.array(X_list, dtype=np.float32)
-    y = np.array(y_list)
-
-    # Mélange aléatoire (sinon les classes sont groupées)
-    idx = np.random.permutation(len(X))
-    X, y = X[idx], y[idx]
-
-    # Séparation train / test
-    N_TRAIN = 6000
-    X_train, X_test = X[:N_TRAIN], X[N_TRAIN:]
-    y_train, y_test = y[:N_TRAIN], y[N_TRAIN:]
+    print("\n  Chargement du dataset MNIST via tf.keras.datasets...")
+    (X_train_raw, y_train), (X_test_raw, y_test) = keras.datasets.mnist.load_data()
 
     print(f"\n  ✓ Dataset chargé")
-    print(f"    Entraînement : {X_train.shape[0]} images | Test : {X_test.shape[0]} images")
-    print(f"    Dimension    : 28×28 = {X_train.shape[1]} pixels par image")
+    print(f"    Entraînement : {X_train_raw.shape[0]} images | Test : {X_test_raw.shape[0]} images")
+    print(f"    Dimension brute : {X_train_raw.shape[1]}×{X_train_raw.shape[2]} pixels")
+    print(f"    Plage originale : [{X_train_raw.min()}, {X_train_raw.max()}]")
 
     # ── Normalisation ──────────────────────────────────────────────────────────
-    # Pixels dans [0, 1] — accélère la convergence et stabilise l'entraînement
+    # Division par 255 : pixels dans [0, 1]
+    # Accélère la convergence et stabilise les gradients
+    X_train = X_train_raw.astype(np.float32) / 255.0
+    X_test  = X_test_raw.astype(np.float32)  / 255.0
     print(f"  ✓ Normalisation : pixels dans [{X_train.min():.2f}, {X_train.max():.2f}]")
 
+    # ── Aplatissement 28×28 → 784 ─────────────────────────────────────────────
+    # Le réseau entièrement connecté attend un vecteur 1D en entrée
+    X_train = X_train.reshape(-1, 784)
+    X_test  = X_test.reshape(-1, 784)
+    print(f"  ✓ Aplatissement : 28×28 → vecteur de {X_train.shape[1]} pixels")
+
     # ── One-hot encoding ───────────────────────────────────────────────────────
-    # Transforme label entier → vecteur binaire (requis par cross-entropy)
-    ohe = OneHotEncoder(sparse_output=False)
-    y_train_ohe = ohe.fit_transform(y_train.reshape(-1, 1))
-    y_test_ohe  = ohe.transform(y_test.reshape(-1, 1))
-    print(f"  ✓ One-hot encoding : ex. label=3 → {y_train_ohe[np.where(y_train==3)[0][0]]}")
+    # Transforme label entier → vecteur binaire (requis par categorical cross-entropy)
+    # ex: 3 → [0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+    y_train_ohe = keras.utils.to_categorical(y_train, num_classes=10)
+    y_test_ohe  = keras.utils.to_categorical(y_test,  num_classes=10)
+    exemple_idx = np.where(y_train == 3)[0][0]
+    print(f"  ✓ One-hot encoding : ex. label=3 → {y_train_ohe[exemple_idx].astype(int)}")
 
     # ── Visualisation des images d'exemple ────────────────────────────────────
     _plot_sample_images(X_train, y_train)
@@ -126,7 +105,7 @@ def _plot_sample_images(X, y):
 
 def build_model(hidden=(128, 64), lr=0.001):
     """
-    Réseau entièrement connecté (MLPClassifier de scikit-learn).
+    Réseau entièrement connecté avec Keras Sequential.
 
     Architecture :
       Entrée   : 784 neurones  (28×28 pixels aplatis)
@@ -135,7 +114,7 @@ def build_model(hidden=(128, 64), lr=0.001):
       Sortie   :  10 neurones  activation Softmax (classification multi-classes)
 
     Compilation :
-      Perte      : categorical cross-entropy (log_loss)
+      Perte      : categorical_crossentropy
       Optimiseur : Adam
       Métrique   : accuracy
     """
@@ -152,17 +131,19 @@ def build_model(hidden=(128, 64), lr=0.001):
     print(f"    Optimiseur  : Adam  (lr={lr})")
     print(f"    Métrique    : Accuracy")
 
-    model = MLPClassifier(
-        hidden_layer_sizes=hidden,   # couches cachées
-        activation="relu",           # ReLU : f(x) = max(0,x)
-        solver="adam",               # Adam : gradient adaptatif
-        alpha=1e-4,                  # régularisation L2 (réduit le surapprentissage)
-        learning_rate_init=lr,       # taux d'apprentissage initial
-        max_iter=1,                  # contrôlé époque par époque dans train_model
-        random_state=42,
-        warm_start=True,             # permet de continuer l'entraînement époque par époque
-        early_stopping=False
+    model = keras.Sequential(name="mnist_fcnn")
+    model.add(layers.Input(shape=(784,)))
+    for n in hidden:
+        model.add(layers.Dense(n, activation="relu"))
+    model.add(layers.Dense(10, activation="softmax"))
+
+    model.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=lr),
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"]
     )
+
+    model.summary()
     print(f"\n  ✓ Modèle construit")
     return model
 
@@ -173,48 +154,34 @@ def build_model(hidden=(128, 64), lr=0.001):
 
 def train_model(model, X_train, y_train, n_epochs=10):
     """
-    Entraîne le modèle époque par époque pour suivre la perte et l'accuracy.
-    10% des données d'entraînement servent de jeu de validation.
+    Entraîne le modèle avec model.fit() de Keras.
+    10% des données d'entraînement servent de jeu de validation (validation_split).
+    Keras calcule la perte et l'accuracy à chaque époque nativement — pas besoin
+    de les recalculer manuellement sur tout le dataset (inefficace avec scikit-learn).
     Trace les courbes d'évolution de la perte et de l'accuracy.
     """
     print("\n" + "═" * 65)
     print("  ÉTAPE 3 — Entraînement du réseau de neurones")
     print("═" * 65)
 
-    # Séparation train / validation (10%)
-    val_size  = int(0.1 * len(X_train))
-    X_val, y_val = X_train[:val_size], y_train[:val_size]
-    X_tr,  y_tr  = X_train[val_size:], y_train[val_size:]
+    n_val = int(0.1 * len(X_train))
+    print(f"\n  Entraînement : {len(X_train) - n_val} exemples | Validation : {n_val} exemples")
+    print(f"  Epochs : {n_epochs} | Batch size : 32\n")
 
-    print(f"\n  Entraînement : {len(X_tr)} exemples | Validation : {len(X_val)} exemples")
-    print(f"  {'Époque':<8} {'Perte train':<16} {'Perte val':<16} {'Acc train':<14} {'Acc val'}")
-    print("  " + "─" * 62)
+    history = model.fit(
+        X_train, y_train,
+        epochs=n_epochs,
+        batch_size=32,
+        validation_split=0.1,   # 10% réservés pour la validation
+        verbose=1
+    )
 
-    train_losses, val_losses         = [], []
-    train_accuracies, val_accuracies = [], []
-
-    for epoch in range(1, n_epochs + 1):
-        model.fit(X_tr, y_tr)   # warm_start=True → continue d'où on en était
-
-        # Probabilités prédites pour calculer la cross-entropy manuellement
-        p_tr  = model.predict_proba(X_tr)
-        p_val = model.predict_proba(X_val)
-
-        def cross_entropy(y_true, proba):
-            proba = np.clip(proba, 1e-10, 1-1e-10)
-            return -np.mean(np.log([proba[i, t] for i, t in enumerate(y_true)]))
-
-        tr_loss  = cross_entropy(y_tr, p_tr)
-        val_loss = cross_entropy(y_val, p_val)
-        tr_acc   = accuracy_score(y_tr, model.predict(X_tr))
-        val_acc  = accuracy_score(y_val, model.predict(X_val))
-
-        train_losses.append(tr_loss);   val_losses.append(val_loss)
-        train_accuracies.append(tr_acc); val_accuracies.append(val_acc)
-
-        print(f"  Époque {epoch:<3} {tr_loss:<16.4f} {val_loss:<16.4f} {tr_acc:<14.4f} {val_acc:.4f}")
-
-    _plot_training_curves(train_losses, val_losses, train_accuracies, val_accuracies)
+    _plot_training_curves(
+        history.history["loss"],
+        history.history["val_loss"],
+        history.history["accuracy"],
+        history.history["val_accuracy"]
+    )
     return model
 
 
@@ -261,8 +228,11 @@ def evaluate_model(model, X_test, y_test):
     print("  ÉTAPE 4 — Évaluation des performances")
     print("═" * 65)
 
-    y_pred = model.predict(X_test)
-    acc    = accuracy_score(y_test, y_pred)
+    # model.predict() retourne des probabilités (softmax) → argmax pour le label
+    y_prob = model.predict(X_test, verbose=0)
+    y_pred = np.argmax(y_prob, axis=1)
+
+    acc = accuracy_score(y_test, y_pred)
     print(f"\n  ✓ Accuracy sur le jeu de test : {acc*100:.2f}%")
 
     print("\n  Rapport de classification par chiffre :")
@@ -396,11 +366,22 @@ def hyperparameter_tuning(X_train, y_train, X_test, y_test):
 
     results = []
     for cfg in experiments:
-        m = MLPClassifier(hidden_layer_sizes=cfg["hidden"], activation="relu",
-                          solver="adam", learning_rate_init=cfg["lr"],
-                          max_iter=10, random_state=42)
-        m.fit(X_train, y_train)
-        acc = accuracy_score(y_test, m.predict(X_test)) * 100
+        # Construire le modèle Keras pour chaque configuration
+        m = keras.Sequential(name="hp_search")
+        m.add(layers.Input(shape=(784,)))
+        for n in cfg["hidden"]:
+            m.add(layers.Dense(n, activation="relu"))
+        m.add(layers.Dense(10, activation="softmax"))
+        m.compile(
+            optimizer=keras.optimizers.Adam(learning_rate=cfg["lr"]),
+            loss="sparse_categorical_crossentropy",
+            metrics=["accuracy"]
+        )
+        m.fit(X_train, y_train, epochs=10, batch_size=32,
+              validation_split=0.1, verbose=0)
+
+        y_pred = np.argmax(m.predict(X_test, verbose=0), axis=1)
+        acc = accuracy_score(y_test, y_pred) * 100
         results.append({**cfg, "accuracy": acc})
         print(f"  {cfg['label'].replace(chr(10),' '):<35} {acc:.2f}%")
 
@@ -462,7 +443,7 @@ def main():
     print("\n" + "═"*65)
     print("  RÉSUMÉ FINAL")
     print("═"*65)
-    print(f"  Dataset         : MNIST simulé  ({len(X_train)} train / {len(X_test)} test)")
+    print(f"  Dataset         : MNIST réel  ({len(X_train)} train / {len(X_test)} test)")
     print(f"  Architecture    : 784 → 128 → 64 → 10")
     print(f"  Activation      : ReLU (couches cachées) + Softmax (sortie)")
     print(f"  Perte           : Categorical Cross-Entropy")
